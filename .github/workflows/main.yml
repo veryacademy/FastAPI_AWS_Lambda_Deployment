@@ -1,0 +1,93 @@
+name: FastAPI CI/CD
+
+on:
+  # Trigger the workflow on push
+  push:
+    branches: 
+      # Push events on main branch
+      - main 
+
+# The Job defines a series of steps that execute on the same runner.
+jobs:
+
+  CI:
+    # Define the runner used in the workflow
+    runs-on: ubuntu-latest
+    steps:   
+      # Check out repo so our workflow can access it
+      - uses: actions/checkout@v2
+      
+      # Step-1 Setup Python
+      - name: Set up Python
+        # This action sets up a Python environment for use in actions
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7
+          # optional: architecture: x64 x64 or x86. Defaults to x64 if not specified
+
+      # Step-2 Install Python Virtual ENV
+      - name: Install Python Virtual ENV
+        run: pip3 install virtualenv
+
+      # Step-3 Setup Virtual ENV
+      # https://docs.github.com/en/actions/guides/caching-dependencies-to-speed-up-workflows
+      - name:  Virtual ENV
+        uses: actions/cache@v2
+        id: cache-venv # name for referring later
+        with:
+          path: venv # what we cache: the Virtual ENV
+          # The cache key depends on requirements.txt
+          key: ${{ runner.os }}-venv-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-
+
+      # Step-4 Build a Virtual ENV, but only if it doesn't already exist
+      - name: Activate Virtual ENV
+        run: python -m venv venv && source venv/bin/activate && pip3 install -r requirements.txt
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+
+      - name: Run Tests   
+        # Note that you have to activate the virtualenv in every step
+        # because GitHub actions doesn't preserve the environment   
+        run: . venv/bin/activate && pytest
+      - name: Create archive of dependencies
+        run: |
+          cd ./venv/lib/python3.7/site-packages
+          zip -r9 ../../../../api.zip .
+      - name: Add API files to Zip file
+        run: cd ./api && zip -g ../api.zip -r .
+      - name: Upload zip file artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: api
+          path: api.zip
+
+  CD:
+    runs-on: ubuntu-latest
+    needs: [CI]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Install AWS CLI
+        uses: unfor19/install-aws-cli-action@v1
+        with:
+          version: 1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_SECRET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+      - name: Download Lambda api.zip
+        uses: actions/download-artifact@v2
+        with:
+          name: api
+      - name: Upload to S3
+        run: aws s3 cp api.zip s3://fastapi123718237193712983/api.zip
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_SECRET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+      - name: Deploy new Lambda
+        run: aws lambda update-function-code --function-name fastapi --s3-bucket fastapi123718237193712983 --s3-key api.zip
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_SECRET_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
